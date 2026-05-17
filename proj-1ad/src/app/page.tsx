@@ -1,6 +1,7 @@
 import { db } from "@/db/client";
 import { productions } from "@/db/schema";
 import { HeaderClock } from "@/components/HeaderClock";
+import { HeroMetric } from "@/components/HeroMetric";
 import { StripboardRow, type EdgeColor } from "@/components/StripboardRow";
 import {
   getTodayScenes,
@@ -66,6 +67,22 @@ export default async function TodayView() {
 
   const todayScenes: TodayScene[] = await getTodayScenes(prod.id, currentShootDay);
 
+  // Day 1: projected wrap is the latest plannedEnd across today's scenes.
+  // Day 2+ will swap this for a live tick-based estimate.
+  const latestEnd = todayScenes.reduce<Date | null>((acc, s) => {
+    if (!s.plannedEnd) return acc;
+    if (!acc || s.plannedEnd > acc) return s.plannedEnd;
+    return acc;
+  }, null);
+  const projectedWrap = latestEnd
+    ? `${pad2(latestEnd.getHours())}:${pad2(latestEnd.getMinutes())}`
+    : "—";
+
+  // Calls today: the `calls` table is empty until Day 2 wires AgentPhone.
+  // Static placeholder for now; Day 2 swaps in a live count.
+  const callsValue = "0 / 0";
+  const callsDelta = "0 outstanding";
+
   return (
     <main>
       <header
@@ -105,6 +122,14 @@ export default async function TodayView() {
           </span>
         </div>
       </header>
+
+      <section
+        className="grid grid-cols-2 gap-8 px-8 py-8"
+        style={{ borderBottom: "0.5px solid var(--color-slate-gray)" }}
+      >
+        <HeroMetric label="Projected wrap" value={projectedWrap} />
+        <HeroMetric label="Calls today" value={callsValue} delta={callsDelta} />
+      </section>
 
       <section>
         {todayScenes.map((s) => (
