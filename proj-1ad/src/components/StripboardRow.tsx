@@ -31,8 +31,11 @@ export function StripboardRow({
         gridTemplateColumns: "4px 1fr auto",
         alignItems: "stretch",
         columnGap: 16,
-        padding: "16px 24px",
-        borderBottom: "0.5px solid var(--color-slate-gray)",
+        // Horizontal padding matches the page-level px-8 (32px) used by
+        // header / hero / agent sections so the colored edge aligns with
+        // the rest of the column.
+        padding: "16px 32px",
+        borderBottom: "0.5px solid #21242A",
       }}
     >
       <div

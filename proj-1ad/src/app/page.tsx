@@ -1,5 +1,7 @@
 import { db } from "@/db/client";
 import { productions } from "@/db/schema";
+import { Caption } from "@/components/Caption";
+import { HairlineRule } from "@/components/HairlineRule";
 import { HeaderClock } from "@/components/HeaderClock";
 import { HeroMetric } from "@/components/HeroMetric";
 import { StripboardRow, type EdgeColor } from "@/components/StripboardRow";
@@ -84,11 +86,8 @@ export default async function TodayView() {
   const callsDelta = "0 outstanding";
 
   return (
-    <main>
-      <header
-        style={{ borderBottom: "0.5px solid var(--color-slate-gray)" }}
-        className="flex items-center justify-between px-8 py-6 gap-6"
-      >
+    <main className="mx-auto" style={{ maxWidth: 960 }}>
+      <header className="flex items-center justify-between gap-6 px-8 py-6">
         <div
           style={{
             fontFamily: "var(--font-serif)",
@@ -114,7 +113,7 @@ export default async function TodayView() {
                 width: 6,
                 height: 6,
                 borderRadius: "50%",
-                background: "var(--color-tungsten)",
+                background: "#4A90C2",
                 display: "inline-block",
               }}
             />
@@ -123,13 +122,14 @@ export default async function TodayView() {
         </div>
       </header>
 
-      <section
-        className="grid grid-cols-2 gap-8 px-8 py-8"
-        style={{ borderBottom: "0.5px solid var(--color-slate-gray)" }}
-      >
+      <HairlineRule />
+
+      <section className="grid grid-cols-2 gap-8 px-8 py-8">
         <HeroMetric label="Projected wrap" value={projectedWrap} />
         <HeroMetric label="Calls today" value={callsValue} delta={callsDelta} />
       </section>
+
+      <HairlineRule />
 
       <section>
         {todayScenes.map((s) => (
@@ -147,6 +147,22 @@ export default async function TodayView() {
             right={`${formatRange(s.plannedStart, s.plannedEnd)}  ${statusLabel(s.status)}`}
           />
         ))}
+      </section>
+
+      <HairlineRule />
+
+      <section className="px-8 py-8">
+        <Caption>Agent activity</Caption>
+        <div
+          className="mt-4"
+          style={{
+            fontFamily: "var(--font-serif)",
+            fontSize: 14,
+            color: "#6E7178",
+          }}
+        >
+          Agent idle  ·  awaiting first call
+        </div>
       </section>
     </main>
   );
