@@ -10,8 +10,8 @@
   --color-bone: #D4D2C8;
   --color-soundstage: #6B8E5A;
   --color-tally: #D94A3D;
-  --font-serif: "Fraunces", Georgia, serif;
-  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --font-serif: var(--font-fraunces), Georgia, serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, monospace;
 }
 
 body {
