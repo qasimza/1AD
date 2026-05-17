@@ -179,6 +179,7 @@ async function seed() {
         orderWithinDay: i + 1,
         status: s.status,
         plannedStart: startDate,
+        plannedEnd: endDate,
         actualStart: s.status !== "planned" ? startDate : null,
         actualWrap: s.status === "wrapped" ? endDate : null,
       })

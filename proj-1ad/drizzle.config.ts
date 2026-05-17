@@ -17,4 +17,8 @@ export default {
   dbCredentials: {
     url: process.env.DATABASE_URL!,
   },
+  // Supabase ships internal CHECK constraints in `auth`, `storage`, `realtime`,
+  // etc. whose `check_clause` is NULL in information_schema. drizzle-kit's
+  // introspector crashes on those. Restrict to the public schema we own.
+  schemaFilter: ["public"],
 } satisfies Config;

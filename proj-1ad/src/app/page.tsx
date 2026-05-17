@@ -1,14 +1,54 @@
 import { db } from "@/db/client";
 import { productions } from "@/db/schema";
 import { HeaderClock } from "@/components/HeaderClock";
+import { StripboardRow, type EdgeColor } from "@/components/StripboardRow";
+import {
+  getTodayScenes,
+  type SceneStatusName,
+  type SceneTypeName,
+  type TodayScene,
+} from "@/lib/queries/today";
 
 const DAY_MS = 1000 * 60 * 60 * 24;
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
-function startOfDay(d: Date): Date {
+// Seed writes production dates as `new Date("YYYY-MM-DD")`, which is UTC
+// midnight. We normalize "today" the same way so day math doesn't drift by
+// a day across timezones (e.g. PDT vs UTC).
+function startOfDayUTC(d: Date): Date {
   const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
+  x.setUTCHours(0, 0, 0, 0);
   return x;
+}
+
+function formatHM(d: Date | null): string {
+  if (!d) return "—";
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+function formatRange(start: Date | null, end: Date | null): string {
+  if (!start && !end) return "—";
+  if (start && end) return `${formatHM(start)} → ${formatHM(end)}`;
+  return formatHM(start ?? end);
+}
+
+// day exterior = sunlit, day interior = neutral bone,
+// night exterior = cool tungsten key, night interior = soft soundstage green.
+const EDGE_BY_TYPE: Record<SceneTypeName, EdgeColor> = {
+  day_ext: "sunlight",
+  night_ext: "tungsten",
+  day_int: "bone",
+  night_int: "soundstage",
+};
+
+// TDD §10.3.1: terminal states uppercase, planned lowercase.
+function statusLabel(s: SceneStatusName): string {
+  if (s === "wrapped") return "WRAPPED";
+  if (s === "rolling") return "ROLLING";
+  if (s === "confirmed") return "CONFIRMED";
+  if (s === "cancelled") return "CANCELLED";
+  if (s === "rescheduled") return "RESCHEDULED";
+  return "planned";
 }
 
 export default async function TodayView() {
@@ -17,12 +57,14 @@ export default async function TodayView() {
     throw new Error("No production found. Run `npx tsx src/db/seed.ts`.");
   }
 
-  const today = startOfDay(new Date());
-  const start = startOfDay(prod.startDate);
-  const end = startOfDay(prod.endDate);
+  const today = startOfDayUTC(new Date());
+  const start = startOfDayUTC(prod.startDate);
+  const end = startOfDayUTC(prod.endDate);
 
   const currentShootDay = Math.floor((today.getTime() - start.getTime()) / DAY_MS) + 1;
   const totalDays = Math.floor((end.getTime() - start.getTime()) / DAY_MS) + 1;
+
+  const todayScenes: TodayScene[] = await getTodayScenes(prod.id, currentShootDay);
 
   return (
     <main>
@@ -63,6 +105,24 @@ export default async function TodayView() {
           </span>
         </div>
       </header>
+
+      <section>
+        {todayScenes.map((s) => (
+          <StripboardRow
+            key={s.id}
+            edge={EDGE_BY_TYPE[s.type]}
+            title={`${s.sceneNumber} — ${s.description}`}
+            caption={
+              <>
+                {s.locationName ? `Loc: ${s.locationName}` : "Loc: —"}
+                {" · "}
+                {`Cast: ${s.castCount}`}
+              </>
+            }
+            right={`${formatRange(s.plannedStart, s.plannedEnd)}  ${statusLabel(s.status)}`}
+          />
+        ))}
+      </section>
     </main>
   );
 }

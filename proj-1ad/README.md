@@ -1,36 +1,42 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# 1ad
 
-## Getting Started
+Hackathon build of the 1ad orchestrator — Next.js 15 + Drizzle + Postgres.
+See [../docs/TDD.md](../docs/TDD.md) for the full design spec.
 
-First, run the development server:
+## Prerequisites
+
+- Node 22+
+- A `.env` (or `.env.local`) with `DATABASE_URL` and service keys. See
+  the existing `.env` for the full list.
+
+## Develop
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Then open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Database
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### Seed (or reseed) the dev database
 
-## Learn More
+Wipes and repopulates the ACME Commercial demo production.
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+npx tsx --env-file=.env src/db/seed.ts
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Run this any time you change `src/db/seed.ts` or want a clean slate.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+### Apply schema changes
 
-## Deploy on Vercel
+```bash
+npx drizzle-kit push
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+If `drizzle-kit push` crashes during schema introspection (known bug with
+Supabase internal CHECK constraints), add the missing column in the
+**Supabase dashboard → Table Editor**, or paste the equivalent
+`ALTER TABLE ...` into the **SQL Editor**.
