@@ -57,17 +57,24 @@ async function main() {
       "I'll repeat it back.",
     // Intentionally NO systemPrompt — that flips AgentPhone into hosted mode
     // and short-circuits the webhook, which is the opposite of what we want.
+    // Passing productionId + contactId opts in to DB persistence (chunk 4):
+    // placeCall inserts a `calls` row immediately, the webhook updates it
+    // on call_ended.
+    productionId: prod.id,
+    contactId: target.id,
   });
 
   console.log("✓ outbound call placed");
-  console.log("  call id:   ", result.id);
-  console.log("  agent id:  ", result.agentId);
-  console.log("  to:        ", result.toNumber);
-  console.log("  status:    ", result.status);
+  console.log("  agentphone id: ", result.id);
+  console.log("  db call id:    ", result.dbCallId ?? "(not persisted)");
+  console.log("  agent id:      ", result.agentId);
+  console.log("  to:            ", result.toNumber);
+  console.log("  status:        ", result.status);
   console.log();
   console.log(
     "Now: answer the phone, say something, listen for the echo, and watch " +
-      "the `next dev` log for `[agentphone-hook]` lines.",
+      "the `next dev` log for `[agentphone-hook]` lines. After hangup, run " +
+      "`scripts/show-calls.ts` to see the persisted row.",
   );
   process.exit(0);
 }

@@ -10,6 +10,11 @@
  *
  * Docs: https://docs.agentphone.ai/documentation/guides/calls
  */
+import {
+  recordOutboundPlaced,
+  type RecordOutboundPlacedArgs,
+} from "@/lib/voice/calls";
+
 const BASE_URL = "https://api.agentphone.ai";
 
 export interface PlaceCallArgs {
@@ -29,6 +34,15 @@ export interface PlaceCallArgs {
   fromNumberId?: string;
   /** Override the env default (`AGENTPHONE_AGENT_ID`). */
   agentId?: string;
+  /**
+   * When provided alongside `contactId`, the placed call is persisted to
+   * the `calls` table via `recordOutboundPlaced`. Omit either to keep the
+   * call ephemeral (used by the hosted-mode smoke test which has no
+   * production context).
+   */
+  productionId?: string;
+  /** See `productionId`. */
+  contactId?: string;
 }
 
 export interface PlacedCall {
@@ -43,6 +57,8 @@ export interface PlacedCall {
   startedAt?: string;
   endedAt?: string;
   durationSeconds?: number;
+  /** Local `calls.id` if we persisted the call; undefined otherwise. */
+  dbCallId?: string;
 }
 
 interface TranscriptTurn {
@@ -120,7 +136,22 @@ export async function placeCall(args: PlaceCallArgs): Promise<PlacedCall> {
     );
   }
 
-  return (await res.json()) as PlacedCall;
+  const placed = (await res.json()) as PlacedCall;
+
+  // Persist when caller wired up the production+contact context. We do this
+  // AFTER AgentPhone accepted the dial so we never insert a row for a call
+  // that never happened. If the DB write fails, surface the underlying
+  // error — the orchestrator wants single-writer integrity per TDD §2.3.
+  if (args.productionId && args.contactId) {
+    const persistArgs: RecordOutboundPlacedArgs = {
+      productionId: args.productionId,
+      contactId: args.contactId,
+      agentphoneCallId: placed.id,
+    };
+    placed.dbCallId = await recordOutboundPlaced(persistArgs);
+  }
+
+  return placed;
 }
 
 /** Fetch full call details including transcripts. */

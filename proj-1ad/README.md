@@ -123,7 +123,8 @@ curl https://<your-id>.ngrok-free.app/api/hook/agentphone
 
 Places one **webhook-mode** call so AgentPhone delegates every user turn
 to `/api/hook/agentphone`. Same target as the hosted-mode test, but no
-`systemPrompt` is sent.
+`systemPrompt` is sent — and `productionId` + `contactId` are passed in
+so the call is persisted to the `calls` table.
 
 ```bash
 npx tsx --env-file=.env.local scripts/test-webhook-call.ts
@@ -131,4 +132,42 @@ npx tsx --env-file=.env.local scripts/test-webhook-call.ts
 
 You should hear the greeting, say something, and hear the agent echo it
 back. The `next dev` log shows `[agentphone-hook]` entries for each turn
-and a final `call_ended` event.
+(emitted as `call.turn` events) and a final `call_ended` write
+(emitted as `call.completed`).
+
+### Inspect persisted calls
+
+Prints the last 10 rows in `calls` joined to `contacts` — verify lifecycle
+persistence is landing rows with the right `outcome`, transcript, and
+timestamps.
+
+```bash
+npx tsx --env-file=.env.local scripts/show-calls.ts
+```
+
+## In-call LLM brain
+
+Voice webhooks route every user turn through an LLM. Default backend is
+OpenAI `gpt-5.4-mini` (sub-second latency, free signup credits, mature
+function-calling for chunk 6). Configure via `.env.local`:
+
+```
+OPENAI_API_KEY=sk-…
+LLM_MODEL=gpt-5.4-mini   # optional; only set to override default
+```
+
+The wrapper lives at `src/lib/llm/chat.ts` — swap providers there if you
+ever want Anthropic / Gemini; the route and prompts are provider-blind.
+
+### Smoke test the model
+
+One-shot LLM call with a fake mid-call user turn — no phone, no DB.
+Confirms the API key + model id + latency before placing a real call.
+
+```bash
+npx tsx --env-file=.env.local scripts/test-llm.ts
+```
+
+Expect a ≤1s round trip and a 1–2 sentence reply in the agent's voice.
+If this fails (404 model, 401 auth, 429 quota, etc.), the live phone
+test will fail too — fix here first.
