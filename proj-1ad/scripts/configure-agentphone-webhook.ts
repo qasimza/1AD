@@ -152,3 +152,5 @@ main().catch((e) => {
   console.error("✗ configure-agentphone-webhook failed:", e);
   process.exit(1);
 });
+
+export {};

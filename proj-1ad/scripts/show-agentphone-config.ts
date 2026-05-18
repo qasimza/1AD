@@ -104,3 +104,5 @@ main().catch((e) => {
   console.error("✗ show-agentphone-config failed:", e);
   process.exit(1);
 });
+
+export {};
