@@ -30,13 +30,13 @@ interface CallRow {
 
 const LIVE: CallRow = {
   id: "live_dp_lens",
-  contact: "David Park",
-  role: "DP",
-  purpose: "Re: lens kit for 14B reverse",
+  contact: "Maya Chen",
+  role: "Lead Actor",
+  purpose: "Re: Confirming Availability",
   startedAt: "2:23 PM",
   duration: "0:42",
   outcome: "live",
-  detail: "Confirming the 35mm anamorphic swap before truck leaves base at 3 PM.",
+  detail: "Confirming availability for Monday 5:30 AM call.",
 };
 
 const RECENT: CallRow[] = [

@@ -246,7 +246,7 @@ export default async function TodayView() {
                 color: "var(--color-chalk-white)",
               }}
             >
-              Calling David Park (DP) · Re: lens kit for 14B
+              Calling Maya Chen (Lead Actor) · Re: Confirming Availability
             </div>
             <div className="caption mt-1" style={{ color: "#9A9CA1" }}>
               <Link href="/calls" style={{ color: "inherit", textDecoration: "none" }}>
