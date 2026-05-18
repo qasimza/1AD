@@ -7,12 +7,36 @@ import {
   scenes,
   sceneCast,
   callTimes,
+  calls,
+  messages,
+  emails,
+  transactions,
+  events,
+  risks,
 } from "./schema";
+
+/** Returns tomorrow at the given local hour (24h) and minute. */
+function tomorrowAt(hour: number, minute = 0): Date {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  d.setHours(hour, minute, 0, 0);
+  return d;
+}
 
 async function seed() {
   console.log("Clearing existing data...");
+  // Delete in FK-dependency order: anything that references contacts or
+  // productions has to go BEFORE contacts/productions themselves. Test
+  // calls accumulate `calls` rows that point at contacts; if those
+  // aren't cleared first, the `DELETE FROM contacts` 23503's.
   await db.delete(callTimes);
   await db.delete(sceneCast);
+  await db.delete(calls);
+  await db.delete(messages);
+  await db.delete(emails);
+  await db.delete(transactions);
+  await db.delete(events);
+  await db.delete(risks);
   await db.delete(scenes);
   await db.delete(locations);
   await db.delete(contacts);
@@ -193,6 +217,50 @@ async function seed() {
     }
   }
 
+  // ─────────────────────────────────────────────────────────
+  // CALL TIMES — Day 3 (tomorrow). Without these rows, the in-call
+  // agent's `get_call_time` tool always returns null and the call
+  // collapses into "I'm not seeing a valid call time on file" loops.
+  // Stagger by role so the seed reflects how a real call sheet looks:
+  // makeup/hair report first, cast next, day players later.
+  // ─────────────────────────────────────────────────────────
+  const callTimeRows = [
+    // Cast — first call of the day is the leads, staggered for hair/makeup
+    { contact: actors[0], hour: 5, minute: 30 }, // Maya Chen, lead
+    { contact: actors[1], hour: 5, minute: 30 }, // Jordan Reyes, lead
+    { contact: actors[2], hour: 7, minute: 0 }, // Priya Shah
+    { contact: actors[3], hour: 7, minute: 0 }, // Marcus Hill
+    { contact: actors[4], hour: 9, minute: 0 }, // Elena Volkov
+    { contact: actors[5], hour: 11, minute: 0 }, // Theo Kim
+    { contact: actors[6], hour: 11, minute: 0 }, // Ana Beltran
+    { contact: actors[7], hour: 13, minute: 0 }, // Wesley Park
+    { contact: actors[8], hour: 13, minute: 0 }, // Riley Foster
+    { contact: actors[9], hour: 5, minute: 30 }, // Sam Iverson, stand-in
+    // Crew — call before cast for prep
+    { contact: crew[0], hour: 5, minute: 0 }, // David Park, DP
+    { contact: crew[4], hour: 5, minute: 0 }, // Khaled, 1st AC
+    { contact: crew[5], hour: 5, minute: 0 }, // Joon, gaffer
+    { contact: crew[6], hour: 5, minute: 0 }, // Tessa, key grip
+    { contact: crew[7], hour: 5, minute: 0 }, // Marco, sound mixer
+    { contact: crew[8], hour: 5, minute: 0 }, // Ivy, script
+    { contact: crew[9], hour: 4, minute: 0 }, // Naomi, makeup HOD
+    { contact: crew[10], hour: 4, minute: 0 }, // Cole, hair HOD
+    { contact: crew[11], hour: 4, minute: 30 }, // Pavan, wardrobe
+    { contact: crew[12], hour: 5, minute: 30 }, // Hannah, props
+    { contact: crew[13], hour: 4, minute: 0 }, // Bo, transport
+    { contact: crew[14], hour: 5, minute: 0 }, // Renée, 2nd AD
+  ];
+
+  await db.insert(callTimes).values(
+    callTimeRows.map(({ contact, hour, minute }) => ({
+      productionId: prod.id,
+      contactId: contact.id,
+      shootDay: 3,
+      callAt: tomorrowAt(hour, minute),
+      freshness: "known" as const,
+    })),
+  );
+
   console.log("✓ Seed complete");
   console.log(`  Production: ${prod.name} (${prod.id})`);
   console.log(`  Actors:        ${actors.length}`);
@@ -201,6 +269,7 @@ async function seed() {
   console.log(`  Loc. owners:   ${locationOwners.length}`);
   console.log(`  Locations:     ${locs.length}`);
   console.log(`  Scenes:        ${scenesData.length}`);
+  console.log(`  Call times:    ${callTimeRows.length} (tomorrow, shoot day 3)`);
   process.exit(0);
 }
 

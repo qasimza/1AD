@@ -216,38 +216,7 @@ export async function listCalls(
   return (await res.json()) as ListCallsResponse;
 }
 
-/**
- * Force-end an active call.
- *
- * Endpoint: `POST /v1/calls/{call_id}/end` (per API reference index, not on
- * the main guide page). Some endpoints return 204 No Content with no body
- * on success — we tolerate that and return `null` instead of trying to
- * JSON-parse an empty response.
- */
-export async function endCall(callId: string): Promise<unknown | null> {
-  const apiKey = requireApiKey();
-
-  const res = await fetch(`${BASE_URL}/v1/calls/${callId}/end`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: "{}",
-  });
-
-  const bodyText = await res.text();
-
-  if (!res.ok) {
-    throw new Error(
-      `AgentPhone POST /v1/calls/${callId}/end failed: ${res.status} ${res.statusText} — ${bodyText || "(empty body)"}`,
-    );
-  }
-
-  if (!bodyText.trim()) return null;
-  try {
-    return JSON.parse(bodyText);
-  } catch {
-    return bodyText;
-  }
-}
+// `endCall` (REST POST /v1/calls/{id}/end) was removed. The in-call
+// agent now ends calls by setting `hangup: true` on the final NDJSON
+// webhook response, which is what AgentPhone's contract actually
+// supports. See `src/app/api/hook/agentphone/route.ts`.

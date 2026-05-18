@@ -54,17 +54,6 @@ your env file, or to confirm a webhook is registered.
 npx tsx --env-file=.env.local scripts/show-agentphone-config.ts
 ```
 
-### Force-end stuck active calls
-
-AgentPhone only allows **one active call per phone number** — a stray
-robocall to your public number, or a hosted-mode call that didn't time out,
-will block new outbound dials with `409 Conflict`. This script lists every
-in-progress call and force-ends each via `POST /v1/calls/{id}/end`.
-
-```bash
-npx tsx --env-file=.env.local scripts/end-active-calls.ts
-```
-
 ### Outbound call smoke test (hosted mode)
 
 Places one hosted-mode call to the first `lead_cast` contact in the seed.
@@ -130,10 +119,11 @@ so the call is persisted to the `calls` table.
 npx tsx --env-file=.env.local scripts/test-webhook-call.ts
 ```
 
-You should hear the greeting, say something, and hear the agent echo it
-back. The `next dev` log shows `[agentphone-hook]` entries for each turn
-(emitted as `call.turn` events) and a final `call_ended` write
-(emitted as `call.completed`).
+You should hear the greeting, talk naturally to One A.D., and watch the
+agent actually invoke tools to look up the call time, confirm
+attendance, and hang up cleanly when it's done. The `next dev` log
+shows `[agentphone-hook] agent ok in <ms> tools=[...]` for each turn
+and a final `call_ended` write (emitted as `call.completed`).
 
 ### Inspect persisted calls
 
@@ -145,29 +135,43 @@ timestamps.
 npx tsx --env-file=.env.local scripts/show-calls.ts
 ```
 
-## In-call LLM brain
+## In-call agent
 
-Voice webhooks route every user turn through an LLM. Default backend is
-OpenAI `gpt-5.4-mini` (sub-second latency, free signup credits, mature
-function-calling for chunk 6). Configure via `.env.local`:
+The voice webhook routes every user turn through the **OpenAI Agents
+SDK** (`@openai/agents`). The agent (`src/lib/agent/one-ad.ts`):
+
+- runs an autonomous tool-calling loop per turn (max 4 inner steps),
+- chains conversation state via `previousResponseId` — no manual chat-
+  history bookkeeping, no replay,
+- has 5 function tools wired against Postgres:
+  - `get_call_time` — look up the contact's next call time
+  - `get_scene_details` — fetch scenes for the next shoot day
+  - `record_confirmation` — write `call_times.confirmed_at`
+  - `record_conflict` — open a `risks` row for human follow-up; captures an optional `proposedCallAt` (ISO-8601) and `proposedReason` when the contact offers an alternative
+  - `end_call` — signal hang-up after the next spoken sentence
+    (the webhook then fires `POST /v1/calls/{id}/end` once TTS has
+    flushed the goodbye)
+
+Default model is `gpt-5.4-mini` (sub-second per inner step, mature
+function-calling). Configure via `.env.local`:
 
 ```
 OPENAI_API_KEY=sk-…
-LLM_MODEL=gpt-5.4-mini   # optional; only set to override default
+LLM_MODEL=gpt-5.4-mini   # optional override
 ```
 
-The wrapper lives at `src/lib/llm/chat.ts` — swap providers there if you
-ever want Anthropic / Gemini; the route and prompts are provider-blind.
+### Smoke test the agent
 
-### Smoke test the model
-
-One-shot LLM call with a fake mid-call user turn — no phone, no DB.
-Confirms the API key + model id + latency before placing a real call.
+Runs the agent against the real database with a synthetic call row —
+no phone, no AgentPhone. Confirms the API key, model availability,
+SDK wiring, and that tools can actually read and write the seed data
+before you burn AgentPhone minutes.
 
 ```bash
-npx tsx --env-file=.env.local scripts/test-llm.ts
+npx tsx --env-file=.env.local scripts/test-agent.ts
 ```
 
-Expect a ≤1s round trip and a 1–2 sentence reply in the agent's voice.
-If this fails (404 model, 401 auth, 429 quota, etc.), the live phone
-test will fail too — fix here first.
+Expect the agent to invoke `get_call_time` (visible in the
+`tools called:` array) and produce a one-or-two sentence reply
+referencing your seeded production + contact. Override the user line
+with `AGENT_TEST_USER_TURN="..."` to probe specific tools.

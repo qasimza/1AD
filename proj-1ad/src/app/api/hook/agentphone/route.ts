@@ -19,10 +19,13 @@
  *
  * Chunk 3 scope: prove the loop is alive by echoing transcripts.
  * Chunk 4 scope: persist call lifecycle (calls row + dashboard events).
- * Chunk 5 scope: route every voice turn through the LLM (default
- * OpenAI gpt-5.4-mini, configurable via LLM_MODEL env). We send an
- * immediate interim NDJSON chunk so the caller hears "one sec" while
- * the model thinks, then the final chunk with the model's reply.
+ * Chunks 5+6 (collapsed): route every voice turn through the OpenAI
+ *   Agents SDK with real function tools (`get_call_time`,
+ *   `get_scene_details`, `record_confirmation`, `record_conflict`,
+ *   `end_call`). We send an immediate interim NDJSON chunk so the caller
+ *   hears a backchannel while the agent loop runs, then the final chunk
+ *   with the model's reply. If the agent invoked `end_call`, we
+ *   fire-and-forget a REST hang-up after the spoken goodbye.
  *
  * Security: every delivery carries `X-Webhook-Signature` (HMAC-SHA256 over
  * `${timestamp}.${rawBody}`) and `X-Webhook-Timestamp`. We verify and log;
@@ -33,18 +36,13 @@
  */
 import type { NextRequest } from "next/server";
 
-import { chat, type ChatMessage } from "@/lib/llm/chat";
-import { pickInterim } from "@/lib/llm/interims";
-import {
-  baseCallSystemPrompt,
-  genericCallSystemPrompt,
-} from "@/lib/llm/prompts";
-import { recordEvent } from "@/lib/orchestrator/events";
+import { runOneAD } from "@/lib/agent/one-ad";
 import {
   getCallContext,
   recordCallEnded,
   type TranscriptTurn,
 } from "@/lib/voice/calls";
+import { recordEvent } from "@/lib/orchestrator/events";
 import { verifyAgentPhoneSignature } from "@/lib/voice/signature";
 
 // Voice webhooks must respond well under AgentPhone's 30s default timeout.
@@ -54,27 +52,51 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
- * Module-level conversation state keyed by AgentPhone callId.
+ * Module-level conversation continuity keyed by AgentPhone callId.
  *
- * Why: AgentPhone's `recentHistory` field in webhook payloads is unreliable
- * for the agent's own outbound turns — the `initialGreeting` from
- * `/v1/calls` never appears in it, and the assistant replies we send via
- * NDJSON only sometimes show up by the next webhook delivery. Without
- * stable history the model re-introduces itself every turn and falls
- * back to pleasantries.
+ * Each entry is the most recent `lastResponseId` from the Agents SDK
+ * run on that call. Passing it back as `previousResponseId` on the next
+ * turn lets the Responses API continue from server-managed state,
+ * which means:
+ *   - we DON'T send full chat history every turn (cheaper + faster),
+ *   - the model can't drift away from what we think it said,
+ *   - "the agent re-introduces itself every turn" (chunk-5 symptom)
+ *     is structurally impossible.
  *
- * Trade-off: in-process state is lost on Next.js hot reload during dev
- * (the agent forgets mid-call after a code change), and doesn't scale
- * across multiple Cloud Run instances. Both are acceptable for day 2 —
- * hot-reload only affects local dev, and our single-instance footprint
- * makes the multi-instance concern theoretical until day 3+. We'll
- * migrate to Postgres-backed state when we go horizontal.
+ * Trade-off: lost on Next.js hot reload + doesn't span horizontal
+ * instances. Both acceptable for day 2 — dev hot reload only affects
+ * local testing, and we're single-instance for the foreseeable
+ * future. Migrate to Postgres-backed state on day 3+.
  */
-const callTurnState = new Map<string, ChatMessage[]>();
+const lastResponseIds = new Map<string, string>();
 
-/** Hardcoded purpose for chunk 5. Chunk 7 derives this from DB per call. */
-const CHUNK_5_PLACEHOLDER_PURPOSE =
-  "Confirm the recipient is good for tomorrow's call time, check whether they need transportation or have any conflicts, and offer to follow up on any specifics they ask about.";
+/** Hardcoded purpose for chunks 5/6. Chunk 7 will derive this per call. */
+const PLACEHOLDER_PURPOSE =
+  "Confirm the recipient is good for their next call time, surface any conflicts or transportation needs, and wrap the call cleanly once you have an answer.";
+
+/**
+ * The line One A.D. speaks when WE — not the user — have to end the
+ * call due to a system failure (DB down, OpenAI 500, etc.). We say it,
+ * then signal AgentPhone to drop the line, so the user isn't left
+ * hanging in awkward silence.
+ */
+const SYSTEM_FAILURE_REPLY =
+  "Sorry — I'm experiencing some issues on my end. I'll give you a call back later. Thanks for picking up.";
+
+/**
+ * Regex matching common farewell phrases. The agent's prompt tells it
+ * to invoke `end_call` whenever its reply contains a farewell, but
+ * models slip — they say "bye" in one turn and call `end_call` only on
+ * the next, leaving the line open for an awkward extra beat. This
+ * regex is a safety net: if the spoken reply ends with a farewell and
+ * the model forgot to call end_call, we still emit `hangup: true`.
+ *
+ * Keep the patterns tight (word boundaries, anchored to the last ~30
+ * chars of the reply) so we don't false-positive on mid-sentence uses
+ * like "I'll call back later".
+ */
+const FAREWELL_REGEX =
+  /\b(bye|goodbye|see you|talk soon|have a good (one|day|night)|take care|we're (done|good) here|that(?:'s| is) all (I need|I have))\b[.!?…\s]*$/i;
 
 interface VoiceMessageData {
   callId: string;
@@ -121,23 +143,6 @@ interface WebhookEnvelope {
   recentHistory?: HistoryItem[];
 }
 
-/**
- * Translate AgentPhone's recentHistory into chat turns.
- *
- * AgentPhone calls the user "inbound" (audio coming IN to the agent) and
- * the agent "outbound". OpenAI/Anthropic call user turns "user" and
- * agent turns "assistant".
- */
-function toChatHistory(history: HistoryItem[] | undefined): ChatMessage[] {
-  if (!history || history.length === 0) return [];
-  return history
-    .filter((h) => h.channel === "voice")
-    .map<ChatMessage>((h) => ({
-      role: h.direction === "outbound" ? "assistant" : "user",
-      text: h.content,
-    }));
-}
-
 export async function POST(req: NextRequest) {
   const rawBody = await req.text();
 
@@ -153,9 +158,9 @@ export async function POST(req: NextRequest) {
   const sigHeader = req.headers.get("x-webhook-signature");
   const tsHeader = req.headers.get("x-webhook-timestamp");
 
-  // Verify the signature when we have a secret to verify against. We log
-  // mismatches loudly but never reject — the secret rotates on every
-  // webhook upsert and we don't want to lock a live call mid-test.
+  // Verify signature when we have a secret. Log on mismatch but never
+  // reject — the secret rotates on every webhook upsert and we don't
+  // want to lock a live call mid-test.
   const secret = process.env.AGENTPHONE_WEBHOOK_SECRET;
   let sigStatus: "ok" | "mismatch" | "missing-secret" | "missing-headers";
   if (!secret) {
@@ -177,7 +182,6 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Friendly base log every event shares — easy to grep in `next dev`.
   console.log("[agentphone-hook] ←", {
     deliveryId,
     sigStatus,
@@ -196,15 +200,10 @@ export async function POST(req: NextRequest) {
       turns: data.transcript?.length ?? 0,
     });
 
-    // Free the in-process conversation state for this call so the Map
-    // doesn't grow forever. Idempotent — call_ended can fire twice on
-    // retry and deleting an absent key is a no-op.
-    callTurnState.delete(data.callId);
+    // Free conversation continuity for this call so the Map doesn't
+    // grow forever. Idempotent on retry.
+    lastResponseIds.delete(data.callId);
 
-    // Persist lifecycle close. `recordCallEnded` looks up the row by
-    // agentphoneCallId — if it's missing (stray inbound call, hosted-mode
-    // call that bypassed our insert), we just log and move on rather than
-    // creating an orphaned record.
     try {
       const result = await recordCallEnded({
         agentphoneCallId: data.callId,
@@ -225,12 +224,10 @@ export async function POST(req: NextRequest) {
       }
     } catch (err) {
       // Never fail the webhook response on a DB hiccup — AgentPhone will
-      // retry with exponential backoff (per webhooks doc), which is worse
-      // than just logging here.
+      // retry with exponential backoff, which is worse than logging here.
       console.error("[agentphone-hook] failed to persist call_ended:", err);
     }
 
-    // `agent.call_ended` is fire-and-forget — body is ignored.
     return new Response("ok", { status: 200 });
   }
 
@@ -250,43 +247,52 @@ export async function POST(req: NextRequest) {
   });
 
   const userTurn = data.transcript ?? "";
-  const interim = pickInterim();
-
-  // Prefer our in-process state (reliable, includes all prior assistant
-  // replies). Fall back to AgentPhone's recentHistory if the map is empty
-  // (e.g. after a dev hot-reload mid-call).
-  const stored = callTurnState.get(data.callId);
-  const history: ChatMessage[] =
-    stored && stored.length > 0 ? stored : toChatHistory(payload.recentHistory);
+  const previousResponseId = lastResponseIds.get(data.callId);
 
   console.log(
-    `[agentphone-hook] history: stored=${stored?.length ?? 0} fallback=${payload.recentHistory?.length ?? 0} using=${history.length}`,
+    `[agentphone-hook] continuity: previousResponseId=${previousResponseId ? previousResponseId.slice(-8) : "(none)"}`,
   );
 
-  // NDJSON streaming response so the caller hears the interim chunk while
-  // we're still calling the LLM. Order of operations inside `start`:
-  //   1. Flush `{interim:true}` immediately — TTS starts speaking it.
-  //   2. Look up call context (production + contact) for the system prompt.
-  //   3. Fire-and-forget `call.turn` event for the dashboard.
-  //   4. Await the LLM reply.
-  //   5. Update in-process conversation state for the NEXT turn.
-  //   6. Flush the final chunk and close the turn.
+  // NDJSON streaming response. We deliberately do NOT emit an interim
+  // backchannel chunk anymore: the chunk-5 "Mm-hmm. / Got it." filler
+  // fired on EVERY user turn — even one-word utterances — and made the
+  // agent sound like an over-eager chatbot. With the Agents SDK loop
+  // landing replies in ~1-2s, a brief beat of silence is more natural
+  // than a reflexive ack. The model itself decides when an
+  // acknowledgement is warranted.
+  //
+  // Order of operations inside `start`:
+  //   1. Look up call context (production + contact) for instructions.
+  //   2. Fire-and-forget `call.turn` event for the dashboard feed.
+  //   3. Await the agent run (LLM + tool loop).
+  //   4. Stash `lastResponseId` for the next turn's continuity.
+  //   5. Flush the final chunk; if `end_call` was invoked, schedule a
+  //      REST hang-up after the spoken sentence.
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const enc = new TextEncoder();
-      controller.enqueue(
-        enc.encode(JSON.stringify({ text: interim, interim: true }) + "\n"),
-      );
+
+      // Three things can go wrong on the way to a reply:
+      //   - `getCallContext` throws (DB unreachable / query error).
+      //   - `runOneAD` throws (OpenAI 5xx, network, SDK exception).
+      //   - `runOneAD` returns an empty reply.
+      // For ANY of those, we speak the system-failure line, persist the
+      // call as ended-due-to-failure, and trigger the REST hang-up so
+      // the user isn't sitting in awkward silence waiting for us.
+      let systemFailure = false;
 
       let context = null;
       try {
         context = await getCallContext(data.callId);
       } catch (err) {
-        console.error("[agentphone-hook] getCallContext failed:", err);
+        console.error(
+          "[agentphone-hook] getCallContext failed — graceful hang-up:",
+          err,
+        );
+        systemFailure = true;
       }
 
       if (context) {
-        // Don't await — the dashboard feed can wait a tick, the caller can't.
         recordEvent({
           productionId: context.productionId,
           kind: "call.turn",
@@ -306,44 +312,118 @@ export async function POST(req: NextRequest) {
         );
       } else {
         console.warn(
-          `[agentphone-hook] voice turn for unknown agentphoneCallId ${data.callId} — using generic prompt`,
+          `[agentphone-hook] voice turn for unknown agentphoneCallId ${data.callId} — agent will run with generic prompt`,
         );
       }
 
-      const system = context
-        ? baseCallSystemPrompt({
-            productionName: context.productionName,
-            contactName: context.contactName ?? undefined,
-            contactRole: context.contactRole ?? undefined,
-            purpose: CHUNK_5_PLACEHOLDER_PURPOSE,
-          })
-        : genericCallSystemPrompt();
+      let reply = SYSTEM_FAILURE_REPLY;
+      let hangup: { reason: string } | undefined;
 
-      let reply: string;
-      const t0 = Date.now();
-      try {
-        reply = await chat({ system, history, user: userTurn });
+      if (!systemFailure) {
+        try {
+          const result = await runOneAD({
+            context: {
+              callDbId: context?.callId ?? "",
+              agentphoneCallId: data.callId,
+              productionId: context?.productionId ?? "",
+              contactId: context?.contactId ?? "",
+            },
+            userTurn,
+            previousResponseId,
+            callInfo: context
+              ? {
+                  productionName: context.productionName,
+                  contactName: context.contactName,
+                  contactRole: context.contactRole,
+                  purpose: PLACEHOLDER_PURPOSE,
+                }
+              : null,
+          });
+
+          if (result.reply && result.reply.trim().length > 0) {
+            reply = result.reply;
+            hangup = result.hangupRequested;
+            if (result.lastResponseId) {
+              lastResponseIds.set(data.callId, result.lastResponseId);
+            }
+            console.log(
+              `[agentphone-hook] agent ok in ${result.latencyMs}ms tools=[${result.toolCalls
+                .map((t) => t.name)
+                .join(", ")}] reply="${reply.slice(0, 120)}"${hangup ? ` hangup=${hangup.reason}` : ""}`,
+            );
+
+            // Surface tool calls as dashboard events. Fire-and-forget.
+            if (context) {
+              for (const tc of result.toolCalls) {
+                recordEvent({
+                  productionId: context.productionId,
+                  kind: "agent.tool",
+                  severity: "info",
+                  payload: {
+                    callId: context.callId,
+                    tool: tc.name,
+                    ok: tc.ok,
+                  },
+                }).catch(() => {});
+              }
+            }
+          } else {
+            console.warn(
+              "[agentphone-hook] agent returned empty reply — graceful hang-up",
+            );
+            systemFailure = true;
+          }
+        } catch (err) {
+          console.error(
+            "[agentphone-hook] agent run failed — graceful hang-up:",
+            err,
+          );
+          systemFailure = true;
+        }
+      }
+
+      // A system failure always hangs up after the apology — leaving the
+      // caller on the line waiting for a recovery turn would be worse
+      // than ending the call. We also emit a `call.system_failure` event
+      // so the dashboard surfaces this differently from a goal-achieved
+      // hang-up.
+      if (systemFailure) {
+        reply = SYSTEM_FAILURE_REPLY;
+        hangup = { reason: "system_failure" };
+        if (context) {
+          recordEvent({
+            productionId: context.productionId,
+            kind: "call.system_failure",
+            severity: "live",
+            payload: {
+              callId: context.callId,
+              agentphoneCallId: data.callId,
+            },
+          }).catch(() => {});
+        }
+      }
+
+      // Safety net: if the reply ends with a farewell phrase but the
+      // model forgot to invoke `end_call`, treat that as an implicit
+      // hangup. This was the #1 reason calls dragged on for an extra
+      // turn — the model would say "bye" but only call end_call on the
+      // next webhook delivery.
+      if (!hangup && FAREWELL_REGEX.test(reply)) {
         console.log(
-          `[agentphone-hook] llm ok in ${Date.now() - t0}ms: ${reply.slice(0, 120)}`,
+          "[agentphone-hook] inferred hangup from farewell phrase in reply",
         );
-      } catch (err) {
-        console.error("[agentphone-hook] llm failed:", err);
-        // Better to say SOMETHING than to drop dead air on a live call.
-        reply =
-          "Sorry — I'm having a moment of trouble on my end. Can I call you right back?";
+        hangup = { reason: "inferred_farewell" };
       }
 
-      // Update conversation state for the next turn. We append even on a
-      // fallback reply so the model knows it apologised — better than
-      // pretending the bad turn never happened.
-      const nextHistory: ChatMessage[] = [
-        ...history,
-        { role: "user", text: userTurn },
-        { role: "assistant", text: reply },
-      ];
-      callTurnState.set(data.callId, nextHistory);
-
-      controller.enqueue(enc.encode(JSON.stringify({ text: reply }) + "\n"));
+      // Include `hangup: true` directly in the final NDJSON chunk.
+      // AgentPhone handles the timing: TTS speaks the text first, then
+      // drops the line. Docs:
+      // https://docs.agentphone.ai/documentation/guides/calls
+      //   field `hangup` on the webhook response, "Set to true to end
+      //   the call after speaking".
+      const finalChunk: Record<string, unknown> = { text: reply };
+      if (hangup) finalChunk.hangup = true;
+      controller.enqueue(enc.encode(JSON.stringify(finalChunk) + "\n"));
       controller.close();
     },
   });
