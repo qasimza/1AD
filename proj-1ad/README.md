@@ -74,3 +74,61 @@ flow before the webhook receiver is online.
 ```bash
 npx tsx --env-file=.env.local scripts/test-place-call.ts
 ```
+
+### Step-by-step call debug
+
+When an outbound call 400s with a confusing error (e.g. "Agent has no phone
+number assigned" even though it does), this walks through env, agent state,
+number state, per-agent webhook, the exact request body, and the raw
+response — so you can see exactly where AgentPhone disagrees with you.
+
+```bash
+npx tsx --env-file=.env.local scripts/debug-agentphone-call.ts
+```
+
+### Webhook loop (local dev)
+
+In webhook mode, AgentPhone POSTs every voice turn to a public HTTPS URL
+and waits for an NDJSON reply. Local `next dev` isn't reachable from
+AgentPhone's servers, so we expose it through ngrok and point the agent
+at the tunnel.
+
+```bash
+# terminal A — local app
+npm run dev
+
+# terminal B — public tunnel to :3000
+ngrok http 3000
+
+# terminal C — point the agent at the tunnel
+WEBHOOK_BASE_URL=https://<your-id>.ngrok-free.app \
+  npx tsx --env-file=.env.local scripts/configure-agentphone-webhook.ts
+```
+
+The script PATCHes `POST /v1/agents/<agent>/webhook` and prints a fresh
+signing secret — AgentPhone rotates it on every upsert. Save it as
+`AGENTPHONE_WEBHOOK_SECRET` in `.env.local`. Pass `--delete` to remove
+the agent webhook entirely.
+
+Re-run the configurator any time ngrok hands you a new subdomain. While
+the receiver is just an echo (`/api/hook/agentphone`), you can sanity-
+check the route with:
+
+```bash
+curl https://<your-id>.ngrok-free.app/api/hook/agentphone
+# → {"ok":true,"route":"/api/hook/agentphone",…}
+```
+
+### Outbound call smoke test (webhook mode)
+
+Places one **webhook-mode** call so AgentPhone delegates every user turn
+to `/api/hook/agentphone`. Same target as the hosted-mode test, but no
+`systemPrompt` is sent.
+
+```bash
+npx tsx --env-file=.env.local scripts/test-webhook-call.ts
+```
+
+You should hear the greeting, say something, and hear the agent echo it
+back. The `next dev` log shows `[agentphone-hook]` entries for each turn
+and a final `call_ended` event.

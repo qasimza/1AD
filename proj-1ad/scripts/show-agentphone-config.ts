@@ -42,10 +42,14 @@ interface Agent {
   numbers?: Array<{ id: string; phoneNumber: string }>;
 }
 
+// The Numbers endpoint returns more than just an `attachedAgentId` and the
+// real field name varies (we've seen `agentId`, `attachedAgentId`, and a
+// nested `agent` object across snapshots). To avoid lying about attachment
+// state, we print the full raw row instead of guessing one field.
 interface NumberRow {
   id: string;
   phoneNumber: string;
-  attachedAgentId?: string | null;
+  [k: string]: unknown;
 }
 
 async function main() {
@@ -68,9 +72,11 @@ async function main() {
   const numbers = await get<{ data: NumberRow[] }>("/v1/numbers?limit=50");
   console.log(`\nNumbers (${numbers.data.length}):`);
   for (const n of numbers.data) {
-    console.log(`  • ${n.phoneNumber}`);
-    console.log(`      id:    ${n.id}`);
-    console.log(`      agent: ${n.attachedAgentId ?? "(unattached)"}`);
+    console.log(`  • ${n.phoneNumber}  (${n.id})`);
+    // Print the full raw row indented so the real attachment fields are
+    // visible without us pretending to know which one AgentPhone returns.
+    const raw = JSON.stringify(n, null, 2).replace(/\n/g, "\n      ");
+    console.log(`      ${raw}`);
   }
 
   const projectHook = await maybeGet("/v1/webhooks");
