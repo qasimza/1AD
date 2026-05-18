@@ -44,6 +44,7 @@ import {
 } from "@/lib/voice/calls";
 import { recordEvent } from "@/lib/orchestrator/events";
 import { verifyAgentPhoneSignature } from "@/lib/voice/signature";
+import { sendPostCallSummary } from "@/lib/voice/summary";
 
 // Voice webhooks must respond well under AgentPhone's 30s default timeout.
 // Force a Node runtime so we can read raw text + stream NDJSON without
@@ -220,6 +221,19 @@ export async function POST(req: NextRequest) {
       } else {
         console.log(
           `[agentphone-hook] persisted call ${result.callId} outcome=${result.outcome}`,
+        );
+
+        // Fire-and-forget the post-call SMS recap. The summariser
+        // inspects outcome + transcript + contact phone and silently
+        // skips when the call didn't produce anything worth texting
+        // (voicemail, no-answer, no transcript, no phone). Any failure
+        // is swallowed inside `sendPostCallSummary` so it can never
+        // bring the webhook ack down.
+        void sendPostCallSummary(result.callId!).catch((err) =>
+          console.error(
+            "[agentphone-hook] sendPostCallSummary unexpected reject:",
+            err,
+          ),
         );
       }
     } catch (err) {

@@ -1,10 +1,13 @@
+import Link from "next/link";
 import { db } from "@/db/client";
 import { productions } from "@/db/schema";
 import { Caption } from "@/components/Caption";
 import { HairlineRule } from "@/components/HairlineRule";
 import { HeaderClock } from "@/components/HeaderClock";
 import { HeroMetric } from "@/components/HeroMetric";
+import { SectionNav } from "@/components/SectionNav";
 import { StripboardRow, type EdgeColor } from "@/components/StripboardRow";
+import { Waveform } from "@/components/Waveform";
 import {
   getTodayScenes,
   type SceneStatusName,
@@ -26,7 +29,11 @@ function startOfDayUTC(d: Date): Date {
 
 function formatHM(d: Date | null): string {
   if (!d) return "—";
-  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  const h24 = d.getHours();
+  const m = pad2(d.getMinutes());
+  const period = h24 >= 12 ? "PM" : "AM";
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+  return `${h12}:${m} ${period}`;
 }
 
 function formatRange(start: Date | null, end: Date | null): string {
@@ -44,14 +51,13 @@ const EDGE_BY_TYPE: Record<SceneTypeName, EdgeColor> = {
   night_int: "soundstage",
 };
 
-// TDD §10.3.1: terminal states uppercase, planned lowercase.
 function statusLabel(s: SceneStatusName): string {
   if (s === "wrapped") return "WRAPPED";
   if (s === "rolling") return "ROLLING";
   if (s === "confirmed") return "CONFIRMED";
   if (s === "cancelled") return "CANCELLED";
   if (s === "rescheduled") return "RESCHEDULED";
-  return "planned";
+  return "PLANNED";
 }
 
 export default async function TodayView() {
@@ -76,9 +82,7 @@ export default async function TodayView() {
     if (!acc || s.plannedEnd > acc) return s.plannedEnd;
     return acc;
   }, null);
-  const projectedWrap = latestEnd
-    ? `${pad2(latestEnd.getHours())}:${pad2(latestEnd.getMinutes())}`
-    : "—";
+  const projectedWrap = formatHM(latestEnd);
 
   // Calls today: the `calls` table is empty until Day 2 wires AgentPhone.
   // Static placeholder for now; Day 2 swaps in a live count.
@@ -124,9 +128,80 @@ export default async function TodayView() {
 
       <HairlineRule />
 
+      <SectionNav current="today" />
+
+      <HairlineRule />
+
       <section className="grid grid-cols-2 gap-8 px-8 py-8">
         <HeroMetric label="Projected wrap" value={projectedWrap} />
         <HeroMetric label="Calls today" value={callsValue} delta={callsDelta} />
+      </section>
+
+      <HairlineRule />
+
+      <section className="px-8 py-6">
+        <Caption>Active escalations</Caption>
+        <div className="mt-4" style={{ display: "grid", gap: 10 }}>
+          {[
+            {
+              id: "weather-cover-set",
+              tone: "#4A90C2",
+              label: "Cover set for tomorrow's beach scenes?",
+              meta: "Story 1 · deadline 5:30 AM",
+            },
+            {
+              id: "sick-cast-triage",
+              tone: "#D94A3D",
+              label: "Reshuffle Day 02 without the lead?",
+              meta: "Story 2 · deadline 8:00 AM",
+            },
+            {
+              id: "turnaround-violation",
+              tone: "#E8C547",
+              label: "Push tomorrow's call to 9:45 AM?",
+              meta: "Story 3 · deadline 11:45 PM",
+            },
+            {
+              id: "multi-day-reshuffle",
+              tone: "#6B8E5A",
+              label: "Approve the rebuilt 9-day shoot order?",
+              meta: "Story 5 · deadline 3:00 PM",
+            },
+          ].map((esc) => (
+            <Link
+              key={esc.id}
+              href={`/escalations/${esc.id}`}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "4px 1fr auto",
+                columnGap: 16,
+                alignItems: "center",
+                padding: "10px 0",
+                borderBottom: "0.5px solid #21242A",
+                color: "inherit",
+                textDecoration: "none",
+              }}
+            >
+              <span
+                aria-hidden
+                style={{
+                  background: esc.tone,
+                  alignSelf: "stretch",
+                  minHeight: 28,
+                }}
+              />
+              <span style={{ fontFamily: "var(--font-serif)", fontSize: 14 }}>
+                {esc.label}
+              </span>
+              <span
+                className="caption"
+                style={{ color: "#6E7178" }}
+              >
+                {esc.meta}
+              </span>
+            </Link>
+          ))}
+        </div>
       </section>
 
       <HairlineRule />
@@ -156,12 +231,39 @@ export default async function TodayView() {
         <div
           className="mt-4"
           style={{
-            fontFamily: "var(--font-serif)",
-            fontSize: 14,
-            color: "#6E7178",
+            display: "grid",
+            gridTemplateColumns: "auto 1fr auto",
+            alignItems: "center",
+            gap: 18,
           }}
         >
-          Agent idle  ·  awaiting first call
+          <Waveform active bars={28} width={200} height={32} />
+          <div>
+            <div
+              style={{
+                fontFamily: "var(--font-serif)",
+                fontSize: 15,
+                color: "var(--color-chalk-white)",
+              }}
+            >
+              Calling David Park (DP) · Re: lens kit for 14B
+            </div>
+            <div className="caption mt-1" style={{ color: "#9A9CA1" }}>
+              <Link href="/calls" style={{ color: "inherit", textDecoration: "none" }}>
+                Open call log →
+              </Link>
+            </div>
+          </div>
+          <div
+            style={{
+              fontFamily: "var(--font-mono)",
+              fontVariantNumeric: "tabular-nums",
+              fontSize: 18,
+              color: "#4A90C2",
+            }}
+          >
+            0:42
+          </div>
         </div>
       </section>
     </main>

@@ -149,6 +149,7 @@ SDK** (`@openai/agents`). The agent (`src/lib/agent/one-ad.ts`):
   - `record_confirmation` — write `call_times.confirmed_at`
   - `record_conflict` — open a `risks` row for human follow-up; captures an optional `proposedCallAt` (ISO-8601) and `proposedReason` when the contact offers an alternative
   - `end_call` — signal hang-up after the next spoken sentence
+- Post-call recap SMS (`src/lib/voice/summary.ts`): when the `call_ended` webhook fires, the saved transcript is summarised by `gpt-5.4-mini` into a 1-3 sentence text and shipped to the contact via AgentPhone (`POST /v1/messages`). Persisted to the local `messages` table; emits a `sms.sent` event. Skipped silently for voicemail/no-answer/empty-transcript calls, or when the summariser returns `SKIP`.
     (the webhook then fires `POST /v1/calls/{id}/end` once TTS has
     flushed the goodbye)
 
