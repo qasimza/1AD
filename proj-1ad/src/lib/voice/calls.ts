@@ -45,6 +45,15 @@ export interface RecordOutboundPlacedArgs {
   productionId: string;
   contactId: string;
   agentphoneCallId: string;
+  /** Optional playbook tag (`calls.playbook`). */
+  playbook?: string;
+  /**
+   * Optional per-call agent purpose. Stored in `calls.structuredResult`
+   * under the `purpose` key. Read by `getCallContext` on every webhook
+   * turn so the in-call prompt reflects what THIS call is about, not a
+   * placeholder.
+   */
+  purpose?: string;
 }
 
 /**
@@ -87,6 +96,8 @@ export async function recordOutboundPlaced(
       direction: "outbound",
       agentphoneCallId: args.agentphoneCallId,
       startedAt: new Date(),
+      playbook: args.playbook ?? null,
+      structuredResult: args.purpose ? { purpose: args.purpose } : null,
     })
     .returning({ id: calls.id });
 
@@ -209,6 +220,14 @@ export interface CallContext {
   contactId: string | null;
   contactName: string | null;
   contactRole: string | null;
+  /**
+   * Per-call agent purpose, set when the call was placed via a playbook.
+   * Null for the default "confirm the next call time" smoke-test flow,
+   * which falls back to the webhook's placeholder purpose.
+   */
+  purpose: string | null;
+  /** Playbook tag (`calls.playbook`). Null when no playbook initiated this call. */
+  playbook: string | null;
 }
 
 /**
@@ -231,6 +250,8 @@ export async function getCallContext(
       contactId: calls.contactId,
       contactName: contacts.name,
       contactRole: contacts.role,
+      structuredResult: calls.structuredResult,
+      playbook: calls.playbook,
     })
     .from(calls)
     .innerJoin(productions, eq(productions.id, calls.productionId))
@@ -239,6 +260,10 @@ export async function getCallContext(
     .limit(1);
 
   if (!row) return null;
+
+  const sr = row.structuredResult as { purpose?: string } | null;
+  const purpose = sr && typeof sr.purpose === "string" ? sr.purpose : null;
+
   return {
     callId: row.callId,
     productionId: row.productionId,
@@ -246,5 +271,7 @@ export async function getCallContext(
     contactId: row.contactId,
     contactName: row.contactName,
     contactRole: row.contactRole,
+    purpose,
+    playbook: row.playbook,
   };
 }

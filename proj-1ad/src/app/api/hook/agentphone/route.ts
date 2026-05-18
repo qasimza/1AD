@@ -44,7 +44,8 @@ import {
 } from "@/lib/voice/calls";
 import { recordEvent } from "@/lib/orchestrator/events";
 import { verifyAgentPhoneSignature } from "@/lib/voice/signature";
-import { sendPostCallSummary } from "@/lib/voice/summary";
+import { runChangeOfPlansPlaybook } from "@/lib/playbooks/change-of-plans";
+
 
 // Voice webhooks must respond well under AgentPhone's 30s default timeout.
 // Force a Node runtime so we can read raw text + stream NDJSON without
@@ -223,15 +224,16 @@ export async function POST(req: NextRequest) {
           `[agentphone-hook] persisted call ${result.callId} outcome=${result.outcome}`,
         );
 
-        // Fire-and-forget the post-call SMS recap. The summariser
-        // inspects outcome + transcript + contact phone and silently
-        // skips when the call didn't produce anything worth texting
-        // (voicemail, no-answer, no transcript, no phone). Any failure
-        // is swallowed inside `sendPostCallSummary` so it can never
-        // bring the webhook ack down.
-        void sendPostCallSummary(result.callId!).catch((err) =>
+        // Fire-and-forget the change-of-plans playbook. If the in-call
+        // agent recorded any conflict on this call, the playbook emails
+        // the line producer with structured details and, when an
+        // alternative time was proposed, places sequential renegotiation
+        // calls to the contact's scene-mates. No-op when the call had no
+        // conflict. All failures are swallowed inside the playbook so a
+        // broken downstream step can never bring the webhook ack down.
+        void runChangeOfPlansPlaybook(result.callId!).catch((err: unknown) =>
           console.error(
-            "[agentphone-hook] sendPostCallSummary unexpected reject:",
+            "[agentphone-hook] change-of-plans playbook unexpected reject:",
             err,
           ),
         );
@@ -349,7 +351,11 @@ export async function POST(req: NextRequest) {
                   productionName: context.productionName,
                   contactName: context.contactName,
                   contactRole: context.contactRole,
-                  purpose: PLACEHOLDER_PURPOSE,
+                  // Per-call purpose stored at placement time by a
+                  // playbook (e.g. the change-of-plans renegotiation
+                  // calls). Falls back to the smoke-test placeholder
+                  // when no playbook is driving the call.
+                  purpose: context.purpose ?? PLACEHOLDER_PURPOSE,
                 }
               : null,
           });

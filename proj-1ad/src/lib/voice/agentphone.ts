@@ -43,6 +43,20 @@ export interface PlaceCallArgs {
   productionId?: string;
   /** See `productionId`. */
   contactId?: string;
+  /**
+   * Optional playbook tag. Persisted on `calls.playbook` so call_ended
+   * handlers can branch behaviour by source ("change_of_plans" calls
+   * shouldn't re-trigger the change-of-plans playbook, etc.).
+   */
+  playbook?: string;
+  /**
+   * Optional per-call purpose. Persisted on `calls.structuredResult.purpose`
+   * and threaded into the in-call agent's system prompt instead of the
+   * placeholder. Used by playbooks that need the agent to talk about
+   * something specific (e.g. "Maya proposed shifting 5:30 → 7, can you
+   * accommodate?").
+   */
+  purpose?: string;
 }
 
 export interface PlacedCall {
@@ -147,6 +161,8 @@ export async function placeCall(args: PlaceCallArgs): Promise<PlacedCall> {
       productionId: args.productionId,
       contactId: args.contactId,
       agentphoneCallId: placed.id,
+      playbook: args.playbook,
+      purpose: args.purpose,
     };
     placed.dbCallId = await recordOutboundPlaced(persistArgs);
   }
@@ -220,88 +236,10 @@ export async function listCalls(
 // agent now ends calls by setting `hangup: true` on the final NDJSON
 // webhook response, which is what AgentPhone's contract actually
 // supports. See `src/app/api/hook/agentphone/route.ts`.
-
-export interface SendMessageArgs {
-  /** E.164 recipient (the contact's phone). */
-  toNumber: string;
-  /** SMS body. Multi-segment is fine but AgentPhone bills per segment. */
-  body: string;
-  /** Override the env default (`AGENTPHONE_AGENT_ID`). */
-  agentId?: string;
-  /**
-   * Optional caller-id number id (`num_…`). Defaults to
-   * `AGENTPHONE_NUMBER_ID` so the SMS arrives from the same number that
-   * placed the call — recipients see one phone number for the whole
-   * relationship, not two.
-   */
-  fromNumberId?: string;
-}
-
-export interface SentMessage {
-  id: string;
-  agentId: string;
-  toNumber: string;
-  fromNumber?: string;
-  body: string;
-  status?: string;
-  createdAt?: string;
-}
-
-/**
- * Send a single SMS / iMessage via AgentPhone. The agent's assigned
- * number is used as the sender unless `fromNumberId` overrides it.
- *
- * Dev override: respects `TEST_PHONE_OVERRIDE` the same way `placeCall`
- * does — so smoke tests redirect to your own phone instead of dialing
- * a real contact.
- *
- * Docs: https://docs.agentphone.ai/api-reference/messages/send-message-v-1-messages-post
- */
-export async function sendMessage(args: SendMessageArgs): Promise<SentMessage> {
-  const apiKey = requireApiKey();
-  const agentId = args.agentId ?? process.env.AGENTPHONE_AGENT_ID;
-  if (!agentId) {
-    throw new Error("AGENTPHONE_AGENT_ID is not set and no agentId arg given");
-  }
-
-  const intendedTo = args.toNumber;
-  const override = process.env.TEST_PHONE_OVERRIDE;
-  const toNumber = override && override.length > 0 ? override : intendedTo;
-  if (override && override !== intendedTo) {
-    console.log(
-      `[agentphone] sms dev-override: would have texted ${intendedTo}, texting ${override} instead`,
-    );
-  }
-
-  const fromNumberId = args.fromNumberId ?? process.env.AGENTPHONE_NUMBER_ID;
-
-  // NB: /v1/messages requires snake_case fields (`agent_id`, `to_number`,
-  // `number_id`) per the AgentPhone validator — even though /v1/calls
-  // happily accepts camelCase. Inconsistent on their side, but the
-  // 422 response is explicit, so we mirror the snake_case shape here
-  // and leave placeCall's payload untouched.
-  const body: Record<string, unknown> = {
-    agent_id: agentId,
-    to_number: toNumber,
-    body: args.body,
-  };
-  if (fromNumberId && fromNumberId !== "pp") body.number_id = fromNumberId;
-
-  const res = await fetch(`${BASE_URL}/v1/messages`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(
-      `AgentPhone POST /v1/messages failed: ${res.status} ${res.statusText} — ${text}`,
-    );
-  }
-
-  return (await res.json()) as SentMessage;
-}
+//
+// `sendMessage` (POST /v1/messages) was also removed: outbound SMS on
+// this account is gated behind 10DLC registration which is a
+// multi-day approval process. Until that lands, the post-call recap
+// goes out via email through AgentMail (see
+// `src/lib/email/agentmail.ts` + the change-of-plans playbook). When
+// 10DLC clears, restore the wrapper from the git history.

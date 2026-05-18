@@ -149,9 +149,46 @@ SDK** (`@openai/agents`). The agent (`src/lib/agent/one-ad.ts`):
   - `record_confirmation` — write `call_times.confirmed_at`
   - `record_conflict` — open a `risks` row for human follow-up; captures an optional `proposedCallAt` (ISO-8601) and `proposedReason` when the contact offers an alternative
   - `end_call` — signal hang-up after the next spoken sentence
-- Post-call recap SMS (`src/lib/voice/summary.ts`): when the `call_ended` webhook fires, the saved transcript is summarised by `gpt-5.4-mini` into a 1-3 sentence text and shipped to the contact via AgentPhone (`POST /v1/messages`). Persisted to the local `messages` table; emits a `sms.sent` event. Skipped silently for voicemail/no-answer/empty-transcript calls, or when the summariser returns `SKIP`.
-    (the webhook then fires `POST /v1/calls/{id}/end` once TTS has
-    flushed the goodbye)
+
+### Change-of-plans playbook
+
+When the in-call agent records a `contact_conflict` risk during a call,
+the `call_ended` webhook fires the **change-of-plans playbook**
+(`src/lib/playbooks/change-of-plans.ts`):
+
+1. **Email the line producer** via AgentMail (`POST /v0/inboxes/{id}/messages/send`).
+   Body includes the contact, their original call time, the proposed
+   alternative, the reason, and what auto-actions are happening next.
+   Persisted to the `emails` table with the AgentMail message id; emits
+   an `email.sent` event for the dashboard feed.
+2. **Renegotiate scene-mates** — if the contact proposed a specific
+   alternative time, the playbook finds everyone in the same scenes on
+   the same shoot day (via `scene_cast`) and queues outbound calls to
+   each. The first call fires immediately; subsequent calls chain off
+   each renegotiation call's own `call_ended` event so we never have
+   two outbound calls in flight at once. Each call carries a per-call
+   `purpose` string explaining the shift, stored on
+   `calls.structuredResult.purpose` and read by the webhook on every
+   turn so the in-call agent talks about the *proposed* time, not the
+   original. Playbook tag `change_of_plans` is set on
+   `calls.playbook` so we don't recursively re-fire the playbook on
+   the calls it spawned.
+
+Required env vars (`.env.local`):
+
+```
+AGENTMAIL_API_KEY=…
+AGENTMAIL_INBOX_ID=inbox_…
+TEST_EMAIL_OVERRIDE=you@example.com   # optional: redirect all outbound email here
+```
+
+For the seed data, `Lena Ortiz` (role=`line_producer`) is the email
+target. Update her `contacts.email` to a real inbox to actually
+receive the test.
+
+> Outbound SMS via AgentPhone is currently blocked on 10DLC
+> registration; the post-call recap text path was removed until that
+> clears. Email is the only outbound channel for now.
 
 Default model is `gpt-5.4-mini` (sub-second per inner step, mature
 function-calling). Configure via `.env.local`:
