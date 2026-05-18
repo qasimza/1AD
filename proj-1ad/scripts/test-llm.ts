@@ -27,7 +27,7 @@ async function main() {
   const history = [
     {
       role: "assistant" as const,
-      text: "Hi Maya, this is 1ad — quick check-in on tomorrow's call time.",
+      text: "Hi Maya, this is One A.D. — quick check-in on tomorrow's call time.",
     },
   ];
 

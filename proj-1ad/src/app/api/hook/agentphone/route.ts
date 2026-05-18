@@ -53,6 +53,29 @@ import { verifyAgentPhoneSignature } from "@/lib/voice/signature";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+/**
+ * Module-level conversation state keyed by AgentPhone callId.
+ *
+ * Why: AgentPhone's `recentHistory` field in webhook payloads is unreliable
+ * for the agent's own outbound turns — the `initialGreeting` from
+ * `/v1/calls` never appears in it, and the assistant replies we send via
+ * NDJSON only sometimes show up by the next webhook delivery. Without
+ * stable history the model re-introduces itself every turn and falls
+ * back to pleasantries.
+ *
+ * Trade-off: in-process state is lost on Next.js hot reload during dev
+ * (the agent forgets mid-call after a code change), and doesn't scale
+ * across multiple Cloud Run instances. Both are acceptable for day 2 —
+ * hot-reload only affects local dev, and our single-instance footprint
+ * makes the multi-instance concern theoretical until day 3+. We'll
+ * migrate to Postgres-backed state when we go horizontal.
+ */
+const callTurnState = new Map<string, ChatMessage[]>();
+
+/** Hardcoded purpose for chunk 5. Chunk 7 derives this from DB per call. */
+const CHUNK_5_PLACEHOLDER_PURPOSE =
+  "Confirm the recipient is good for tomorrow's call time, check whether they need transportation or have any conflicts, and offer to follow up on any specifics they ask about.";
+
 interface VoiceMessageData {
   callId: string;
   numberId: string;
@@ -173,6 +196,11 @@ export async function POST(req: NextRequest) {
       turns: data.transcript?.length ?? 0,
     });
 
+    // Free the in-process conversation state for this call so the Map
+    // doesn't grow forever. Idempotent — call_ended can fire twice on
+    // retry and deleting an absent key is a no-op.
+    callTurnState.delete(data.callId);
+
     // Persist lifecycle close. `recordCallEnded` looks up the row by
     // agentphoneCallId — if it's missing (stray inbound call, hosted-mode
     // call that bypassed our insert), we just log and move on rather than
@@ -223,7 +251,17 @@ export async function POST(req: NextRequest) {
 
   const userTurn = data.transcript ?? "";
   const interim = pickInterim();
-  const history = toChatHistory(payload.recentHistory);
+
+  // Prefer our in-process state (reliable, includes all prior assistant
+  // replies). Fall back to AgentPhone's recentHistory if the map is empty
+  // (e.g. after a dev hot-reload mid-call).
+  const stored = callTurnState.get(data.callId);
+  const history: ChatMessage[] =
+    stored && stored.length > 0 ? stored : toChatHistory(payload.recentHistory);
+
+  console.log(
+    `[agentphone-hook] history: stored=${stored?.length ?? 0} fallback=${payload.recentHistory?.length ?? 0} using=${history.length}`,
+  );
 
   // NDJSON streaming response so the caller hears the interim chunk while
   // we're still calling the LLM. Order of operations inside `start`:
@@ -231,7 +269,8 @@ export async function POST(req: NextRequest) {
   //   2. Look up call context (production + contact) for the system prompt.
   //   3. Fire-and-forget `call.turn` event for the dashboard.
   //   4. Await the LLM reply.
-  //   5. Flush the final chunk and close the turn.
+  //   5. Update in-process conversation state for the NEXT turn.
+  //   6. Flush the final chunk and close the turn.
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const enc = new TextEncoder();
@@ -276,6 +315,7 @@ export async function POST(req: NextRequest) {
             productionName: context.productionName,
             contactName: context.contactName ?? undefined,
             contactRole: context.contactRole ?? undefined,
+            purpose: CHUNK_5_PLACEHOLDER_PURPOSE,
           })
         : genericCallSystemPrompt();
 
@@ -292,6 +332,16 @@ export async function POST(req: NextRequest) {
         reply =
           "Sorry — I'm having a moment of trouble on my end. Can I call you right back?";
       }
+
+      // Update conversation state for the next turn. We append even on a
+      // fallback reply so the model knows it apologised — better than
+      // pretending the bad turn never happened.
+      const nextHistory: ChatMessage[] = [
+        ...history,
+        { role: "user", text: userTurn },
+        { role: "assistant", text: reply },
+      ];
+      callTurnState.set(data.callId, nextHistory);
 
       controller.enqueue(enc.encode(JSON.stringify({ text: reply }) + "\n"));
       controller.close();

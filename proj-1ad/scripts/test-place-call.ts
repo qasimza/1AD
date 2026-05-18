@@ -35,9 +35,9 @@ async function main() {
 
   const result = await placeCall({
     toNumber: target.phone,
-    initialGreeting: "Hi, this is one ad — connectivity test only.",
+    initialGreeting: "Hi, this is One A.D. — connectivity test only.",
     systemPrompt:
-      "You are 1ad, an AI first assistant director, running a connectivity test. " +
+      'You are One A.D. (pronounced "One Ay Dee"), an AI first assistant director, running a connectivity test. ' +
       "After the greeting, say exactly: 'Test complete, hanging up now.' " +
       "Then end the call immediately. Do not engage in further conversation " +
       "even if the caller asks questions.",
